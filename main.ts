@@ -1,67 +1,63 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+// import obsidian
+import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
 
-// Remember to rename these classes and interfaces!
+// import openai
+import OpenAI from 'openai';
 
 interface MyPluginSettings {
-	mySetting: string;
+	openAPIKey: string;
+	model: string;
+	prompt: string;
 }
 
 const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+	openAPIKey: '',
+	model: 'gpt-4o-mini',
+	prompt: 'You are a helpful note-taking plugin. You are asked to make the note neat that the user gives you. You should make the note more structured and organized, but you shouldn\'t change the meaning of the note and shoudn\'t omit the specific details as possible. Also, you should use the language that the original note is written in.'
 }
 
 export default class MyPlugin extends Plugin {
 	settings: MyPluginSettings;
 
 	async onload() {
+		// Load the settings for the plugin
 		await this.loadSettings();
 
+		// Create an instance of the OpenAI class
+		const openai = new OpenAI({ apiKey: this.settings.openAPIKey, dangerouslyAllowBrowser: true });
+
 		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
+		const ribbonIconEl = this.addRibbonIcon('sparkles', 'Make your note neat', async (evt: MouseEvent) => {
+			await this.makeTextNeat(openai);
 		});
+
 		// Perform additional things with the ribbon
 		ribbonIconEl.addClass('my-plugin-ribbon-class');
 
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
 		// This adds a simple command that can be triggered anywhere
 		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
+			id: 'make-note-neat',
+			name: 'Make your note neat',
+			callback: async () => {
+				await this.makeTextNeat(openai);
 			}
 		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
+		this.addCommand({
+			id: 'make-selected-text-neat',
+			name: 'Make selected text neat',
+			editorCallback: async (editor: Editor, view: MarkdownView) => {
+				const selectedText = editor.getSelection();
+				if (selectedText === '') {
+					new Notice('No text selected');
+					return;
 				}
+				const neatText = await this.makeTextNeat(openai, selectedText);
+				if (!neatText) {
+					new Notice('Failed to make the text neat');
+					return;
+				}
+				editor.replaceSelection(neatText);
 			}
 		});
 
@@ -73,9 +69,6 @@ export default class MyPlugin extends Plugin {
 		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
 			console.log('click', evt);
 		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
 	}
 
 	onunload() {
@@ -89,21 +82,57 @@ export default class MyPlugin extends Plugin {
 	async saveSettings() {
 		await this.saveData(this.settings);
 	}
-}
 
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
+	async makeTextNeat(openai: OpenAI, text?: string) {
+		const file = this.app.workspace.getActiveFile();
+		if (!file) {
+			new Notice('No active file open');
+			return;
+		}
+		new Notice('Working on making your note neat!');
+		if (text === undefined) {
+			const fileContent = await this.app.vault.read(file);
+			// Call the OpenAI API
+			const response = await openai.chat.completions.create({
+				model: this.settings.model,
+				messages: [
+					{
+						role: 'developer',
+						content: this.settings.prompt
+					},
+					{
+						role: 'user',
+						content: fileContent
+					}
+				]
+			});
+			const neatNote = response.choices[0].message.content;
+			if (!neatNote) {
+				new Notice('Failed to make the note neat');
+				return;
+			}
+			await this.app.vault.modify(file, neatNote);
+		} else {
+			const response = await openai.chat.completions.create({
+				model: this.settings.model,
+				messages: [
+					{
+						role: 'developer',
+						content: this.settings.prompt
+					},
+					{
+						role: 'user',
+						content: text
+					}
+				]
+			});
+			const neatNote = response.choices[0].message.content;
+			if (!neatNote) {
+				new Notice('Failed to make the note neat');
+				return;
+			}
+			return neatNote;
+		}
 	}
 }
 
@@ -121,14 +150,15 @@ class SampleSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
+			.setName('OpenAI API Key')
+			.setDesc('Enter your OpenAI API key here.')
 			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
+				.setPlaceholder('API Key')
+				.setValue(this.plugin.settings.openAPIKey)
 				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
+					this.plugin.settings.openAPIKey = value;
 					await this.plugin.saveSettings();
-				}));
+				})
+				.inputEl.type = 'password');
 	}
 }
